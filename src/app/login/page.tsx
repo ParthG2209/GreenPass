@@ -10,7 +10,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import OTPVerification from '@/components/OTPVerification';
 import { validateInput } from '@/lib/validation';
 import { AccountSchema } from '@/lib/validation/schemas';
-import { sanitizeObject, sanitizeForDatabase } from '@/lib/utils';
+import { sanitizeObject } from '@/lib/utils';
 
 type LoginMethod = 'password' | 'otp';
 type LoginStep = 'method' | 'otp';
@@ -73,7 +73,24 @@ function LoginForm() {
         router.push('/');
       }
     } catch (_err) {
-      setError('An unexpected error occurred');
+       let msg = 'Login failed.';
++      if (_err instanceof Error) {
++        const message = _err.message.toLowerCase();
++        if (message.includes('invalid credentials')) {
++          msg = 'Email or password is incorrect. Check your credentials and try again.';
++        } else if (message.includes('network')) {
++          msg = 'Network connection error: verify your internet and try again.';
++        } else if (message.includes('user not found')) {
++          msg = 'User not found. Verify the email.';
++        } else if (message.includes('timeout')) {
++          msg = 'Request timed out. Try again.';
++        } else {
++          msg = `Login failed: ${_err.message}`;
++        }
++      }
++      setError(msg);
++      alert(msg);
+  }
     } finally {
       setLoading(false);
     }
@@ -103,7 +120,7 @@ function LoginForm() {
       } else {
         setStep('otp');
       }
-    } catch (_err) {
+    } catch {
       setError('An unexpected error occurred');
     } finally {
       setLoading(false);
@@ -122,7 +139,7 @@ function LoginForm() {
       }
       
       return { success: true };
-    } catch (_err) {
+    } catch {
       return { 
         success: false, 
         error: 'Verification failed. Please try again.' 
@@ -142,7 +159,7 @@ function LoginForm() {
       }
       
       return { success: true };
-    } catch (_err) {
+    } catch {
       return { 
         success: false, 
         error: 'Failed to resend OTP. Please try again.' 
@@ -161,7 +178,7 @@ function LoginForm() {
         setError(error.message);
         setLoading(false);
       }
-    } catch (err) {
+    } catch {
       setError('An unexpected error occurred');
       setLoading(false);
     }

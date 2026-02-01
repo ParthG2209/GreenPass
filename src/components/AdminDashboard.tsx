@@ -30,6 +30,7 @@ import { useWeatherDataBatch } from "@/hooks/useWeatherData";
 import { useSSE } from "@/contexts/ConnectionContext";
 import ConnectionStatusIndicator from './ConnectionStatusIndicator';
 import { DataFetchErrorBoundary } from './errors';
+import { logger } from '@/lib/logger';
 
 export default function AdminDashboard() {
   const [stats, setStats] = useState<DashboardStats>({
@@ -50,7 +51,14 @@ export default function AdminDashboard() {
   const [destinations, setDestinations] = useState<Destination[]>([]);
   const [adjustedCapacities, setAdjustedCapacities] = useState<Record<string, number>>({});
   const [alerts, setAlerts] = useState<Alert[]>([]);
-  const [weatherMap, setWeatherMap] = useState<Record<string, any>>({});
+  const [weatherMap, setWeatherMap] = useState<Record<string, {
+    temperature: number;
+    humidity: number;
+    weatherMain: string;
+    weatherDescription: string;
+    windSpeed: number;
+    recordedAt: string;
+  }>>({});
   const [policies, setPolicies] = useState<Record<SensitivityLevel, EcologicalPolicy>>(DEFAULT_POLICIES);
   const [loading, setLoading] = useState(true);
   const [editingPolicy, setEditingPolicy] = useState<SensitivityLevel | null>(null);
@@ -62,19 +70,24 @@ export default function AdminDashboard() {
     isOpen: !!editingPolicy,
     onClose: () => setEditingPolicy(null)
   });
-  const [impactData, setImpactData] = useState<any[]>([]);
-  const [historicalTrends, setHistoricalTrends] = useState<any[]>([]);
 
   const [activeTab, setActiveTab] = useState<'overview' | 'policies' | 'ecological'>('overview');
 
   // Use React Query for batch weather data display
-  const { data: batchWeatherData, refetch: refetchWeather } = useWeatherDataBatch(
+  const { refetch: refetchWeather } = useWeatherDataBatch(
     destinations.map(d => d.id)
   );
 
   const updateWeatherData = useCallback(async (destinations: Destination[]) => {
     const dbService = getDbService();
-    const newWeatherMap: Record<string, any> = {};
+    const newWeatherMap: Record<string, {
+      temperature: number;
+      humidity: number;
+      weatherMain: string;
+      weatherDescription: string;
+      windSpeed: number;
+      recordedAt: string;
+    }> = {};
     const destinationIds = destinations.map(d => d.id);
 
     try {
@@ -129,7 +142,11 @@ export default function AdminDashboard() {
             newWeatherMap[destination.id] = weatherDataForMap;
           }
         } catch (err) {
-          console.error(`Error updating weather for ${destination.name}:`, err);
+          logger.error(
+            `Error updating weather for ${destination.name}`,
+            err,
+            { component: 'AdminDashboard', operation: 'updateWeatherData', metadata: { destinationId: destination.id, destinationName: destination.name } }
+          );
         }
       }
 
@@ -137,7 +154,11 @@ export default function AdminDashboard() {
       // Invalidate React Query cache to reflect new data
       refetchWeather();
     } catch (error) {
-      console.error("Error in batch weather update:", error);
+      logger.error(
+        'Error in batch weather update',
+        error,
+        { component: 'AdminDashboard', operation: 'batchWeatherUpdate' }
+      );
     }
   }, [refetchWeather]);
 
@@ -148,21 +169,15 @@ export default function AdminDashboard() {
         dashboardStats,
         destinationsData,
         alertsData,
-        ecologicalData,
-        trendsData,
-        wasteMetrics
+        ecologicalData
       ] = await Promise.all([
         dbService.getDashboardStats(),
         dbService.getDestinations(),
         dbService.getAlerts(),
-        dbService.getEcologicalImpactData(),
-        dbService.getHistoricalOccupancyTrends(),
-        dbService.getWasteMetricsSummary(),
+        dbService.getEcologicalImpactData()
       ]);
 
       setStats(dashboardStats);
-      setImpactData(ecologicalData);
-      setHistoricalTrends(trendsData);
 
       // Check for ecological alerts
       for (const data of ecologicalData) {
@@ -175,7 +190,7 @@ export default function AdminDashboard() {
               type: "ecological",
               title: `Ecological Limit Warning - ${data.name}`,
               message: `${data.name} has reached ${Math.round(data.utilization)}% of its adjusted ecological capacity.`,
-              severity: severity as any,
+              severity: severity as 'high' | 'critical',
               destinationId: data.id,
               isActive: true,
             });
@@ -232,7 +247,11 @@ export default function AdminDashboard() {
       // Update weather data for all destinations
       updateWeatherData(transformedDestinations);
     } catch (error) {
-      console.error("Error loading dashboard data:", error);
+      logger.error(
+        'Error loading dashboard data',
+        error,
+        { component: 'AdminDashboard', operation: 'loadDashboardData' }
+      );
     } finally {
       setLoading(false);
     }
@@ -260,7 +279,11 @@ export default function AdminDashboard() {
           loadDashboardData();
         }
       } catch (err) {
-        console.error("Error parsing real-time data:", err);
+        logger.error(
+          'Error parsing real-time data',
+          err,
+          { component: 'AdminDashboard', operation: 'parseRealTimeData' }
+        );
       }
     }, [loadDashboardData])
   );

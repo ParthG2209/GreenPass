@@ -4,7 +4,7 @@ import { RealtimeChannel } from '@supabase/supabase-js';
 import { validateInput, WeatherMonitorSchema } from '@/lib/validation';
 
 import { createServerComponentClient } from '@/lib/supabase';
-import { broadcast, BroadcastPayload } from '@/lib/messagingService';
+import { distributedBroadcast, BroadcastPayload } from '@/lib/messagingService';
 
 // Local instance state for SSE connections
 const activeWriters = new Set<WritableStreamDefaultWriter>();
@@ -14,10 +14,12 @@ const encoder = new TextEncoder();
 let sharedChannel: RealtimeChannel | null = null;
 let heartbeatInterval: NodeJS.Timeout | null = null;
 
+type LocalFlushData = BroadcastPayload | { type: 'heartbeat'; timestamp: string };
+
 /**
  * localFlush sends a message to all SSE connections connected to THIS instance.
  */
-const localFlush = async (data: any) => {
+const localFlush = async (data: LocalFlushData) => {
   const message = `data: ${JSON.stringify(data)}\n\n`;
   const encoded = encoder.encode(message);
   
@@ -94,7 +96,7 @@ export async function POST(request: NextRequest) {
       if (request.headers.get('content-type')?.includes('application/json')) {
         body = await request.json();
       }
-    } catch (e) {
+    } catch {
       // Body might be empty
     }
 
@@ -113,7 +115,7 @@ export async function POST(request: NextRequest) {
     await weatherMonitoringService.checkWeatherNow();
     
     // After checking, we broadcast to everyone
-    await broadcast({ 
+    await distributedBroadcast({ 
       type: 'weather_update_available', 
       timestamp: new Date().toISOString(),
       source: 'manual_trigger'
@@ -125,19 +127,35 @@ export async function POST(request: NextRequest) {
       timestamp: new Date().toISOString()
     });
   } catch (error) {
-    console.error('❌ Error in weather-monitor API:', error);
-    return NextResponse.json(
-      { 
-        success: false,
-        error: 'Weather monitor trigger failed',
-        message: 'Internal server error',
-        timestamp: new Date().toISOString()
-      },
-      { status: 500 }
-    );
-  }
+    let errorMsg = 'Realtime weather monitoring failed.';
+    let statusCode = 500;
+  
+    if (error instanceof Error) {
+      if (error.message.includes('validation')) {
+        errorMsg = 'Invalid monitoring parameters.';
+        statusCode = 400;
+      } else if (error.message.includes('destination')) {
+        errorMsg = 'Destination not found for monitoring.';
+        statusCode = 404;
+      } else if (error.message.includes('weather service')) {
+        errorMsg = 'Weather service temporarily unavailable.';
+        statusCode = 503;
+      } else if (error.message.includes('database')) {
+        errorMsg = 'Error accessing the database.';
+        statusCode = 500;
+      } else if (error.message.includes('timeout')) {
+        errorMsg = 'Monitoring request timed out.';
+        statusCode = 504;
+      } else {
+        errorMsg = `Error monitoring weather: ${error.message}`;
+      }
+    }
+  
+  return NextResponse.json(
+    { error: errorMsg, destinations: [] },
+    { status: statusCode }
+  );
 }
-
 export async function GET(_request: NextRequest) {
   const responseStream = new TransformStream();
   const writer = responseStream.writable.getWriter();

@@ -56,9 +56,24 @@ export default function SignUp() {
         // Move to OTP verification step
         setStep('otp');
       }
-    } catch (_err) {
-      setError('An unexpected error occurred');
-    } finally {
+    } catch (error) {
+  let msg = 'An unexpected error occurred. Please try again.';
+  if (error instanceof Error) {
+    if (error.message.includes('validation')) {
+      msg = 'invalid data: verify all required fields.';
+    } else if (error.message.includes('email already exists')) {
+      msg = 'Email already registered. Log in or use another email.';
+    } else if (error.message.includes('network')) {
+      msg = 'Connection error: check your internet and try again.';
+    } else if (error.message.includes('timeout')) {
+      msg = 'Operation timed out. Please try again.';
+    } else {
+      msg = `Error: ${error.message}`;
+    }
+  }
+  setError(msg);
+}
+finally {
       setLoading(false);
     }
   };
@@ -76,7 +91,7 @@ export default function SignUp() {
       
       // Success - user will be redirected automatically by auth state change
       return { success: true };
-    } catch (_err) {
+    } catch {
       return { 
         success: false, 
         error: 'Verification failed. Please try again.' 
@@ -96,7 +111,7 @@ export default function SignUp() {
       }
       
       return { success: true };
-    } catch (_err) {
+    } catch {
       return { 
         success: false, 
         error: 'Failed to resend OTP. Please try again.' 

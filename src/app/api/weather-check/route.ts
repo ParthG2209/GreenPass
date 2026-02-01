@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { validateInput, WeatherCheckSchema } from '@/lib/validation';
-import { z } from 'zod';
+import { logger } from '@/lib/logger';
 
 interface WeatherData {
   temperature: number;
@@ -177,15 +177,32 @@ class ServerWeatherService {
         .select();
 
       if (error) {
-        console.error('❌ Error saving weather data:', error);
-        console.error('Error details:', JSON.stringify(error, null, 2));
+        logger.error(
+          'Error saving weather data',
+          error,
+          { component: 'weather-check-route', operation: 'saveWeatherData', metadata: { destinationId: weatherData.destination_id, location: weatherData.location } }
+        );
+        logger.error(
+          'Error details',
+          null,
+          { component: 'weather-check-route', operation: 'saveWeatherData', metadata: { errorDetails: JSON.stringify(error, null, 2) } }
+        );
         return false;
       }
 
       console.log('✅ Weather data saved successfully:', data);
       return true;
     } catch (error) {
-      console.error('❌ Exception in saveWeatherData:', error);
+      if (error instanceof Error) {
+        const isDbError = error.message.includes('Database');
+        logger.error(
+          error.message.includes('Database') ? 'Database error occurred while saving weather data' : 'Error saving weather data',
+          error,
+          { component: 'weather-check-route', operation: 'saveWeatherData', metadata: { destinationId: weatherData.destination_id, isDbError: error.message.includes('Database') } }
+        );
+      } else {
+        logger.error('Unknown error saving weather data', error, { component: 'weather-check-route', operation: 'saveWeatherData', metadata: { destinationId: weatherData.destination_id } });
+      }
       return false;
     }
   }
@@ -215,19 +232,32 @@ class ServerWeatherService {
         .select();
 
       if (error) {
-        console.error('❌ Error adding alert:', error);
-        console.error('Error details:', JSON.stringify(error, null, 2));
+        logger.error(
+          'Error adding alert',
+          error,
+          { component: 'weather-check-route', operation: 'addWeatherAlert', metadata: { alertType: alert.type, destinationId: alert.destinationId } }
+        );
+        logger.error(
+          'Error details',
+          null,
+          { component: 'weather-check-route', operation: 'addWeatherAlert', metadata: { errorDetails: JSON.stringify(error, null, 2) } }
+        );
         return false;
       }
 
       console.log('✅ Alert added successfully:', data);
       return true;
     } catch (error) {
-      console.error('❌ Exception in addAlert:', error);
-      return false;
-    }
+       if (error instanceof Error) {
+         logger.error(
+           'Failed to add alert',
+           new Error(error.message),
+           { component: 'weather-check-route', operation: 'addWeatherAlert', metadata: { alertType: alert.type, destinationId: alert.destinationId } }
+         );
+     } 
+     return false;
   }
-
+}
   async getDestinations(): Promise<DatabaseDestination[]> {
     try {
       console.log('📍 Fetching destinations from database...');
@@ -238,7 +268,11 @@ class ServerWeatherService {
         .eq('is_active', true);
 
       if (error) {
-        console.error('❌ Error fetching destinations:', error);
+        logger.error(
+          'Error fetching destinations',
+          error,
+          { component: 'weather-check-route', operation: 'fetchDestinations' }
+        );
         throw error;
       }
 
@@ -252,7 +286,11 @@ class ServerWeatherService {
       throw new Error('No active destinations found in database');
       
     } catch (error) {
-      console.error('❌ Database destinations query failed:', error);
+      logger.error(
+        'Database destinations query failed',
+        error,
+        { component: 'weather-check-route', operation: 'fetchDestinations' }
+      );
       console.log('🔄 Using fallback destinations for testing...');
       
       // Return fallback destinations for Jammu and Himachal Pradesh
@@ -301,7 +339,11 @@ class ServerWeatherService {
         .eq('is_active', true);
 
       if (deactivateError) {
-        console.error('Error deactivating old weather alerts:', deactivateError);
+        logger.error(
+          'Error deactivating old weather alerts',
+          deactivateError,
+          { component: 'weather-check-route', operation: 'deactivateOldWeatherAlerts' }
+        );
       } else {
         console.log('✅ Deactivated old weather alerts');
       }
@@ -316,12 +358,20 @@ class ServerWeatherService {
         .lt('created_at', oneHourAgo);
 
       if (deleteError) {
-        console.error('Error cleaning up old weather alerts:', deleteError);
+        logger.error(
+          'Error cleaning up old weather alerts',
+          deleteError,
+          { component: 'weather-check-route', operation: 'cleanupOldWeatherAlerts' }
+        );
       } else {
         console.log('✅ Cleaned up old inactive weather alerts');
       }
     } catch (error) {
-      console.error('Error in deactivateOldWeatherAlerts:', error);
+      logger.error(
+        'Error in deactivateOldWeatherAlerts',
+        error,
+        { component: 'weather-check-route', operation: 'deactivateOldWeatherAlerts' }
+      );
     }
   }
 }
@@ -388,7 +438,7 @@ export async function POST(request: NextRequest) {
       if (request.headers.get('content-type')?.includes('application/json')) {
         body = await request.json();
       }
-    } catch (e) {
+    } catch {
       // Body might be empty, which is fine for this trigger
     }
 
@@ -520,7 +570,11 @@ export async function POST(request: NextRequest) {
         }
 
       } catch (error) {
-        console.error(`❌ Error checking weather for ${destination.name}:`, error);
+        logger.error(
+          `Error checking weather for ${destination.name}`,
+          error,
+          { component: 'weather-check-route', operation: 'checkDestinationWeather', metadata: { destinationId: destination.id, destinationName: destination.name } }
+        );
       }
     }
 
@@ -544,7 +598,11 @@ export async function POST(request: NextRequest) {
     });
 
   } catch (error) {
-    console.error('❌ Error in server-side weather monitoring:', error);
+    logger.error(
+      'Error in server-side weather monitoring',
+      error,
+      { component: 'weather-check-route', operation: 'weatherMonitoring' }
+    );
     
     return NextResponse.json(
       { 
@@ -558,7 +616,7 @@ export async function POST(request: NextRequest) {
   }
 }
 
-export async function GET(_request: NextRequest) {
+export async function GET() {
   return NextResponse.json({
     message: 'Weather monitoring API endpoint',
     timestamp: new Date().toISOString(),

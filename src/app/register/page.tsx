@@ -6,9 +6,8 @@ import Layout from '@/components/Layout';
 import { User, CheckCircle } from 'lucide-react';
 import { getDbService } from '@/lib/databaseService';
 import { FormErrorBoundary } from '@/components/errors';
-import { 
-  sanitizeForDatabase, 
-  sanitizeObject 
+import {
+  sanitizeObject
 } from '@/lib/utils';
 import { 
   validateInput, 
@@ -262,10 +261,25 @@ const handleSubmit = async (e: React.FormEvent) => {
       router.push('/tourist/bookings');
     }, 3000);
     
-  } catch (error) {
-    console.error('Error submitting booking:', error);
-    alert('Failed to submit booking. Please try again.');
-  } finally {
+  }catch (error) {
+  let msg = 'booking failed';
+  if (error instanceof Error) {
+    if (error.message.includes('validation')) {
+      msg = 'Validation failed: please check your input.';
+    } else if (error.message.includes('email')) {
+      msg = 'E-mail already registered. Use another email.';
+    } else if (error.message.includes('password')) {
+      msg = 'Password does not meet security requirements.';
+    } else if (error.message.includes('network')) {
+      msg = 'Connection failed: check your  internet.';
+    } else if (error.message.includes('duplicate')) {
+      msg = 'Duplicate entry: some information is already registered.';
+    } else {
+      msg = ` Registry failed: ${error.message}`;
+    }
+  }
+  alert(msg);
+}finally {
     setIsSubmitting(false);
   }
 };

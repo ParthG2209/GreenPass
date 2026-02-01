@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import Image from 'next/image';
 import TouristLayout from '@/components/TouristLayout';
 import { useModalAccessibility } from "@/lib/accessibility";
@@ -46,11 +46,7 @@ export default function EcoInitiativesPage() {
   useModalAccessibility({ modalRef: registrationModalRef, isOpen: showConfirmModal, onClose: () => setShowConfirmModal(false) });
   useModalAccessibility({ modalRef: cancelModalRef, isOpen: showCancelModal, onClose: () => setShowCancelModal(false) });
 
-  useEffect(() => {
-    fetchData();
-  }, [user]);
-
-  const fetchData = async () => {
+  const fetchData = useCallback(async () => {
     if (!user?.id) return;
     setIsLoading(true);
     try {
@@ -77,7 +73,11 @@ export default function EcoInitiativesPage() {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [user]);
+
+  useEffect(() => {
+    fetchData();
+  }, [fetchData]);
 
   const handleRegisterClick = (activity: CleanupActivity) => {
     setSelectedActivity(activity);
@@ -106,9 +106,28 @@ export default function EcoInitiativesPage() {
       // Re-fetch to be sure
       fetchData();
     } catch (error) {
-      console.error('Registration failed:', error);
-      alert('Failed to register for activity. Please try again.');
-    } finally {
+    let msg = 'Failed to register for the activity. Please try again.';
+    if (error instanceof Error) {
+      if (error.message.includes('validation')) {
+        msg = 'Invalid data: please check the activity details.';
+      } else if (error.message.includes('capacity') || error.message.includes('full')) {
+        msg = 'Activity is full. Choose another date.';
+      } else if (error.message.includes('duplicate') || error.message.includes('already')) {
+        msg = 'You are already registered for this activity.';
+      } else if (error.message.includes('network')) {
+        msg = 'Network error: please check your internet connection.';
+      } else if (error.message.includes('unauthorized')) {
+        msg = 'Access denied: please log in again.';
+      } else if (error.message.includes('database')) {
+        msg = 'Server error: please try again later.';
+      } else if (error.message.includes('timeout')) {
+        msg = 'Operation timed out: please try again.';
+      } else {
+        msg = `Error: ${error.message}`;
+      }
+    }
+    alert(msg);
+} finally {
       setIsRegistering(false);
     }
   };
@@ -130,8 +149,23 @@ export default function EcoInitiativesPage() {
       
       fetchData();
     } catch (error) {
-      console.error('Cancellation failed:', error);
-      alert('Failed to cancel registration. Please try again.');
+      let msg = 'failed to cancel the registration. Please try again.';
+      if (error instanceof Error) {
+        if (error.message.includes('not found')) {
+          msg = 'Registration not found.';
+        } else if (error.message.includes('network')) {
+          msg = 'Network error: check your connection and try again.';
+        } else if (error.message.includes('permission')) {
+          msg = 'You do not have permission to cancel this registration.';
+        } else if (error.message.includes('database')) {
+          msg = 'Server error: please try again later.';
+        } else if (error.message.includes('timeout')) {
+          msg = 'Operation timed out: please try again.';
+        } else {
+          msg = `Error: ${error.message}`;
+        }
+      }
+      alert(msg);
     }
   };
 
@@ -340,7 +374,7 @@ export default function EcoInitiativesPage() {
                 />
                 <div className="absolute inset-0 flex items-center justify-center">
                   <div className="p-6 bg-white/10 backdrop-blur-md rounded-2xl border border-white/20 text-center max-w-xs">
-                    <p className="text-white text-xl font-black mb-2">"Small acts, when multiplied by millions, can transform the world."</p>
+                    <p className="text-white text-xl font-black mb-2">&quot;Small acts, when multiplied by millions, can transform the world.&quot;</p>
                     <p className="text-emerald-300 text-sm font-bold uppercase tracking-widest">— Howard Zinn</p>
                   </div>
                 </div>
@@ -504,7 +538,7 @@ export default function EcoInitiativesPage() {
               </div>
               <h3 id="registration-modal-title" className="text-3xl font-black text-slate-900 mb-4">Join this initiative?</h3>
               <p className="text-slate-500 font-medium mb-8">
-                You're about to join <span className="text-emerald-600 font-bold">{selectedActivity.title}</span> in {selectedActivity.location}. 
+                You&apos;re about to join <span className="text-emerald-600 font-bold">{selectedActivity.title}</span> in {selectedActivity.location}. 
                 Earn <span className="text-emerald-600 font-bold">{selectedActivity.ecoPointsReward} Eco-Points</span> upon successful participation.
               </p>
               

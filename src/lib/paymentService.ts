@@ -1,22 +1,61 @@
 import { supabase } from './supabase';
-import { Database } from '@/types/database';
 import {
   Payment,
   PaymentStatus,
   PaymentIntent,
   PaymentReceipt,
   Refund,
-  RefundStatus,
   CreatePaymentIntentInput,
   ProcessRefundInput,
   PaymentStatistics,
   BookingPricing,
   PaymentGateway,
   RazorpayOrderData,
+  PaymentMethod,
 } from '@/types/payment';
+import { logger } from './logger';
 
-type DbPayment = Database['public']['Tables']['payments']['Row'];
-type DbRefund = Database['public']['Tables']['refunds']['Row'];
+// Local type definitions for database rows (not yet in generated types)
+// These will be replaced when `supabase gen types` is run after applying payment-schema.sql
+type DbPayment = {
+  id: string;
+  booking_id: string;
+  user_id: string;
+  amount: number;
+  currency: string;
+  status: PaymentStatus;
+  payment_method?: PaymentMethod;
+  gateway: PaymentGateway;
+  gateway_payment_id?: string | null;
+  gateway_order_id?: string | null;
+  metadata?: Record<string, unknown> | null;
+  failure_reason?: string | null;
+  created_at: string;
+  updated_at: string;
+  paid_at?: string | null;
+};
+
+type DbRefund = {
+  id: string;
+  payment_id: string;
+  booking_id: string;
+  amount: number;
+  reason: string;
+  status: string;
+  gateway_refund_id?: string | null;
+  processed_by?: string | null;
+  notes?: string | null;
+  created_at: string;
+  updated_at: string;
+  processed_at?: string | null;
+};
+
+// Helper to get a typed supabase client for payment tables
+// This bypasses TypeScript's strict checking for tables not in the generated schema
+const paymentsTable = () => (supabase as any)?.from('payments');
+const refundsTable = () => (supabase as any)?.from('refunds');
+const paymentReceiptsTable = () => (supabase as any)?.from('payment_receipts');
+const paymentSummaryView = () => (supabase as any)?.from('payment_summary');
 
 const RAZORPAY_KEY_ID = process.env.NEXT_PUBLIC_RAZORPAY_KEY_ID;
 const RAZORPAY_KEY_SECRET = process.env.RAZORPAY_KEY_SECRET;
@@ -65,7 +104,8 @@ class PaymentService {
 
     try {
       // Call database function to calculate price
-      const { data, error } = await supabase.rpc('calculate_booking_price', {
+      // Using type assertion because the function types aren't in generated schema yet
+      const { data, error } = await (supabase.rpc as any)('calculate_booking_price', {
         p_destination_id: destinationId,
         p_group_size: groupSize,
         p_check_in_date: checkInDate,
@@ -92,7 +132,11 @@ class PaymentService {
         breakdown: this.generatePriceBreakdown(pricing),
       };
     } catch (error) {
-      console.error('Error calculating booking price:', error);
+      logger.error(
+        'Error calculating booking price',
+        error,
+        { component: 'paymentService', operation: 'calculateBookingPrice', metadata: { destinationId, groupSize, checkInDate, carbonFootprint } }
+      );
       throw new Error('Failed to calculate booking price');
     }
   }
@@ -149,7 +193,7 @@ class PaymentService {
 
     try {
       // Get booking details
-      const { data: booking, error: bookingError } = await supabase
+      const { data: booking, error: bookingError } = await (supabase as any)
         .from('tourists')
         .select('*, destinations(*)')
         .eq('id', input.booking_id)
@@ -160,7 +204,7 @@ class PaymentService {
       }
 
       // Create payment record
-      const { data: payment, error: paymentError } = await supabase
+      const { data: payment, error: paymentError } = await (supabase as any)
         .from('payments')
         .insert({
           booking_id: input.booking_id,
@@ -186,7 +230,20 @@ class PaymentService {
         return await this.createStripeIntent(payment as any);
       }
     } catch (error) {
-      console.error('Error creating payment intent:', error);
+      logger.error(
+        'Error creating payment intent',
+        error,
+        { 
+          component: 'paymentService', 
+          operation: 'createPaymentIntent', 
+          metadata: { 
+            bookingId: input.booking_id, 
+            amount: input.amount, 
+            currency: input.currency || 'INR',
+            paymentMethod: input.payment_method
+          } 
+        }
+      );
       throw error;
     }
   }
@@ -220,13 +277,17 @@ class PaymentService {
       });
 
       // Update payment with gateway order ID
-      const { error: updateError } = await supabase!
+      const { error: updateError } = await (supabase as any)
         .from('payments')
         .update({ gateway_order_id: order.id })
         .eq('id', payment.id);
 
       if (updateError) {
-        console.error('Failed to update payment with gateway order ID:', updateError);
+        logger.error(
+          'Failed to update payment with gateway order ID',
+          updateError,
+          { component: 'paymentService', operation: 'createRazorpayOrder', metadata: { paymentId: payment.id, orderId: order.id } }
+        );
         // Continue anyway as the order was created
       }
 
@@ -251,7 +312,11 @@ class PaymentService {
         gateway_data: orderData,
       };
     } catch (error) {
-      console.error('Error creating Razorpay order:', error);
+      logger.error(
+        'Error creating Razorpay order',
+        error,
+        { component: 'paymentService', operation: 'createRazorpayOrder', metadata: { paymentId: payment.id, amount: payment.amount } }
+      );
       throw error;
     }
   }
@@ -268,7 +333,7 @@ class PaymentService {
       }
 
       const stripe = new Stripe(STRIPE_SECRET_KEY, {
-        apiVersion: '2025-12-15.clover',
+        apiVersion: '2026-01-28.clover',
       });
 
       const intent = await stripe.paymentIntents.create({
@@ -281,13 +346,17 @@ class PaymentService {
       });
 
       // Update payment with gateway payment ID
-      const { error: updateError } = await supabase!
+      const { error: updateError } = await (supabase as any)
         .from('payments')
         .update({ gateway_payment_id: intent.id })
         .eq('id', payment.id);
 
       if (updateError) {
-        console.error('Failed to update payment with gateway payment ID:', updateError);
+        logger.error(
+          'Failed to update payment with gateway payment ID',
+          updateError,
+          { component: 'paymentService', operation: 'createStripeIntent', metadata: { paymentId: payment.id, intentId: intent.id } }
+        );
         // Continue anyway as the intent was created
       }
 
@@ -302,7 +371,11 @@ class PaymentService {
         },
       };
     } catch (error) {
-      console.error('Error creating Stripe intent:', error);
+      logger.error(
+        'Error creating Stripe intent',
+        error,
+        { component: 'paymentService', operation: 'createStripeIntent', metadata: { paymentId: payment.id, amount: payment.amount } }
+      );
       throw error;
     }
   }
@@ -324,7 +397,7 @@ class PaymentService {
       let payment: DbPayment | null = null;
 
       // First try by gateway_payment_id
-      const { data: paymentByPaymentId, error: fetchError1 } = await supabase
+      const { data: paymentByPaymentId, error: fetchError1 } = await (supabase as any)
         .from('payments')
         .select('*')
         .eq('gateway_payment_id', gatewayPaymentId)
@@ -334,7 +407,7 @@ class PaymentService {
         payment = paymentByPaymentId;
       } else {
         // Fallback to gateway_order_id (for Razorpay)
-        const { data: paymentByOrderId, error: fetchError2 } = await supabase
+        const { data: paymentByOrderId, error: fetchError2 } = await (supabase as any)
           .from('payments')
           .select('*')
           .eq('gateway_order_id', gatewayPaymentId)
@@ -346,13 +419,17 @@ class PaymentService {
       }
 
       if (!payment) {
-        console.error('Payment not found for webhook:', gatewayPaymentId);
+        logger.error(
+          'Payment not found for webhook',
+          null,
+          { component: 'paymentService', operation: 'handlePaymentWebhook', metadata: { gatewayPaymentId, gateway: this.gateway } }
+        );
         return;
       }
 
       // Update gateway_payment_id if we found it by order_id and have the payment ID
       if (!payment.gateway_payment_id && gatewayPaymentId.startsWith('pay_')) {
-        await supabase
+        await (supabase as any)
           .from('payments')
           .update({ gateway_payment_id: gatewayPaymentId })
           .eq('id', payment.id);
@@ -372,7 +449,7 @@ class PaymentService {
         updates.paid_at = new Date().toISOString();
       }
 
-      const { error: updateError } = await supabase
+      const { error: updateError } = await (supabase as any)
         .from('payments')
         .update(updates)
         .eq('id', payment.id);
@@ -383,7 +460,7 @@ class PaymentService {
 
       // Update booking status based on payment
       if (status === 'succeeded') {
-        await supabase
+        await (supabase as any)
           .from('tourists')
           .update({
             payment_status: 'paid',
@@ -396,13 +473,17 @@ class PaymentService {
         // Generate receipt
         await this.generateReceipt(payment.id);
       } else if (status === 'failed' || status === 'cancelled') {
-        await supabase
+        await (supabase as any)
           .from('tourists')
           .update({ payment_status: status })
           .eq('id', payment.booking_id);
       }
     } catch (error) {
-      console.error('Error handling payment webhook:', error);
+      logger.error(
+        'Error handling payment webhook',
+        error,
+        { component: 'paymentService', operation: 'handlePaymentWebhook', metadata: { gateway: this.gateway, gatewayPaymentId } }
+      );
       throw error;
     }
   }
@@ -414,7 +495,7 @@ class PaymentService {
     if (!supabase) return null;
 
     try {
-      const { data, error } = await supabase
+      const { data, error } = await (supabase as any)
         .from('payment_summary')
         .select('*')
         .eq('id', paymentId)
@@ -427,7 +508,7 @@ class PaymentService {
       const receiptNumber = `RCP-${Date.now()}-${paymentId.slice(0, 8)}`;
 
       // Create receipt record
-      await supabase.from('payment_receipts').insert({
+      await (supabase as any).from('payment_receipts').insert({
         payment_id: paymentId,
         booking_id: data.booking_id,
         receipt_number: receiptNumber,
@@ -459,7 +540,11 @@ class PaymentService {
         },
       };
     } catch (error) {
-      console.error('Error generating receipt:', error);
+      logger.error(
+        'Error generating receipt',
+        error,
+        { component: 'paymentService', operation: 'generateReceipt', metadata: { paymentId } }
+      );
       return null;
     }
   }
@@ -474,7 +559,7 @@ class PaymentService {
 
     try {
       // Get payment details
-      const { data: payment, error: paymentError } = await supabase
+      const { data: payment, error: paymentError } = await (supabase as any)
         .from('payments')
         .select('*')
         .eq('id', input.payment_id)
@@ -500,7 +585,7 @@ class PaymentService {
       }
 
       // Create refund record
-      const { data: refund, error: refundError } = await supabase
+      const { data: refund, error: refundError } = await (supabase as any)
         .from('refunds')
         .insert({
           payment_id: input.payment_id,
@@ -529,7 +614,7 @@ class PaymentService {
         }
 
         // Update refund status
-        await supabase
+        await (supabase as any)
           .from('refunds')
           .update({
             status: 'succeeded',
@@ -538,13 +623,13 @@ class PaymentService {
           .eq('id', refund.id);
 
         // Update payment status
-        await supabase
+        await (supabase as any)
           .from('payments')
           .update({ status: 'refunded' })
           .eq('id', input.payment_id);
 
         // Update booking payment status
-        await supabase
+        await (supabase as any)
           .from('tourists')
           .update({ payment_status: 'refunded', status: 'cancelled' })
           .eq('id', payment.booking_id);
@@ -552,7 +637,7 @@ class PaymentService {
         return refund as any;
       } catch (gatewayError) {
         // Update refund status to failed
-        await supabase
+        await (supabase as any)
           .from('refunds')
           .update({ status: 'failed' })
           .eq('id', refund.id);
@@ -560,7 +645,11 @@ class PaymentService {
         throw gatewayError;
       }
     } catch (error) {
-      console.error('Error processing refund:', error);
+      logger.error(
+        'Error processing refund',
+        error,
+        { component: 'paymentService', operation: 'processRefund', metadata: { paymentId: input.payment_id, amount: input.amount, reason: input.reason } }
+      );
       throw error;
     }
   }
@@ -600,7 +689,7 @@ class PaymentService {
     }
 
     const stripe = new Stripe(STRIPE_SECRET_KEY, {
-      apiVersion: '2025-12-15.clover',
+      apiVersion: '2026-01-28.clover',
     });
 
     if (!payment.gateway_payment_id) {
@@ -623,7 +712,8 @@ class PaymentService {
     if (!supabase) return null;
 
     try {
-      const { data, error } = await supabase.rpc('get_payment_statistics', {
+      // Using type assertion because the function types aren't in generated schema yet
+      const { data, error } = await (supabase.rpc as any)('get_payment_statistics', {
         p_start_date: startDate?.toISOString() || new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString(),
         p_end_date: endDate?.toISOString() || new Date().toISOString(),
       });
@@ -631,7 +721,7 @@ class PaymentService {
       if (error) throw error;
 
       // Get payment method breakdown
-      const { data: methodData } = await supabase
+      const { data: methodData } = await (supabase as any)
         .from('payments')
         .select('payment_method, amount')
         .eq('status', 'succeeded')
@@ -645,7 +735,7 @@ class PaymentService {
         wallet: 0,
       };
 
-      methodData?.forEach(payment => {
+      methodData?.forEach((payment: { payment_method: string | null; amount: number }) => {
         if (payment.payment_method) {
           methodBreakdown[payment.payment_method] =
             (methodBreakdown[payment.payment_method] || 0) + payment.amount;
@@ -665,7 +755,11 @@ class PaymentService {
         monthly_revenue: [], // Can be enhanced with more detailed query
       };
     } catch (error) {
-      console.error('Error fetching payment statistics:', error);
+      logger.error(
+        'Error fetching payment statistics',
+        error,
+        { component: 'paymentService', operation: 'getPaymentStatistics' }
+      );
       return null;
     }
   }
@@ -677,7 +771,7 @@ class PaymentService {
     if (!supabase) return null;
 
     try {
-      const { data, error } = await supabase
+      const { data, error } = await (supabase as any)
         .from('payments')
         .select('*')
         .eq('id', paymentId)
@@ -687,7 +781,11 @@ class PaymentService {
 
       return data as any;
     } catch (error) {
-      console.error('Error fetching payment:', error);
+      logger.error(
+        'Error fetching payment',
+        error,
+        { component: 'paymentService', operation: 'getPaymentById', metadata: { paymentId } }
+      );
       return null;
     }
   }
@@ -699,7 +797,7 @@ class PaymentService {
     if (!supabase) return [];
 
     try {
-      const { data, error } = await supabase
+      const { data, error } = await (supabase as any)
         .from('payments')
         .select('*')
         .eq('booking_id', bookingId)
@@ -709,7 +807,11 @@ class PaymentService {
 
       return data as any[];
     } catch (error) {
-      console.error('Error fetching payments:', error);
+      logger.error(
+        'Error fetching payments',
+        error,
+        { component: 'paymentService', operation: 'getPaymentsByBooking', metadata: { bookingId } }
+      );
       return [];
     }
   }

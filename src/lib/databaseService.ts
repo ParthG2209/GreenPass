@@ -1,5 +1,4 @@
 import { supabase, createServerComponentClient } from '@/lib/supabase';
-import { SupabaseClient } from '@supabase/supabase-js';
 import { 
   Tourist, 
   Destination, 
@@ -23,11 +22,11 @@ import { isWithinInterval, format } from 'date-fns';
 import { 
   weatherCache, 
   ecologicalIndicatorCache, 
-  destinationCache, 
   withCache 
 } from './cache';
 import { getPolicyEngine } from './ecologicalPolicyEngine';
 import * as mockData from '@/data/mockData';
+import { logger } from './logger';
 
 // Type aliases for database types
 export type DbTourist = Database['public']['Tables']['tourists']['Row'];
@@ -78,6 +77,7 @@ export interface ComplianceReportInput {
   status?: "pending" | "approved";
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 const db = supabase as any;
 
 class DatabaseService {
@@ -105,14 +105,22 @@ class DatabaseService {
     for (const field of required) {
       const val = tourist[field];
       if (val === undefined || val === null || val === '') {
-        console.error(`❌ Validation failed: Missing required field "${field}"`);
+        logger.error(
+          `Validation failed: Missing required field "${field}"`,
+          null,
+          { component: 'databaseService', operation: 'validateTourist', metadata: { field, touristData: tourist } }
+        );
         return false;
       }
     }
 
     // Type-specific validation
     if (typeof tourist.group_size !== 'number' || tourist.group_size <= 0) {
-      console.error('❌ Validation failed: group_size must be a positive number');
+      logger.error(
+        'Validation failed: group_size must be a positive number',
+        null,
+        { component: 'databaseService', operation: 'validateTourist', metadata: { groupSize: tourist.group_size } }
+      );
       return false;
     }
 
@@ -153,7 +161,7 @@ class DatabaseService {
 
       return data.map(this.transformDbTouristToTourist);
     } catch (error) {
-      console.error('Error in getTourists:', error);
+      logger.error('Error in getTourists', error, { component: 'databaseService', operation: 'getTourists' });
       return [];
     }
   }
@@ -170,13 +178,13 @@ class DatabaseService {
         .single();
 
       if (error || !data) {
-        console.error('Error fetching tourist:', error);
+        logger.error('Error fetching tourist', error, { component: 'databaseService', operation: 'getTouristById', metadata: { touristId: id } });
         return null;
       }
 
       return this.transformDbTouristToTourist(data);
     } catch (error) {
-      console.error('Error in getTouristById:', error);
+      logger.error('Error in getTouristById', error, { component: 'databaseService', operation: 'getTouristById', metadata: { touristId: id } });
       return null;
     }
   }
@@ -189,7 +197,11 @@ class DatabaseService {
         // Check ecological eligibility before adding (consistent with real DB path)
         const eligibility = await this.checkBookingEligibility(tourist.destination_id, tourist.group_size);
         if (!eligibility.allowed) {
-          console.error('Booking blocked by ecological policy:', eligibility.reason);
+          logger.error(
+            'Booking blocked by ecological policy',
+            eligibility.reason ? new Error(eligibility.reason) : new Error('Ecological policy violation'),
+            { component: 'databaseService', operation: 'createBooking', metadata: { destinationId: tourist.destination_id, groupSize: tourist.group_size, reason: eligibility.reason } }
+          );
           return null;
         }
 
@@ -229,14 +241,22 @@ class DatabaseService {
       // Check ecological eligibility before adding
       const eligibility = await this.checkBookingEligibility(tourist.destination_id, tourist.group_size);
       if (!eligibility.allowed) {
-        console.error('Booking blocked by ecological policy:', eligibility.reason);
+        logger.error(
+          'Booking blocked by ecological policy',
+          eligibility.reason ? new Error(eligibility.reason) : new Error('Ecological policy violation'),
+          { component: 'databaseService', operation: 'addTourist', metadata: { destinationId: tourist.destination_id, groupSize: tourist.group_size, reason: eligibility.reason } }
+        );
         return null;
       }
 
       console.log('Attempting to insert tourist:', tourist);
       
       if (!db) {
-        console.error('Database client not initialized');
+        logger.error(
+          'Database client not initialized',
+          null,
+          { component: 'databaseService', operation: 'addTourist' }
+        );
         return null;
       }
 
@@ -277,14 +297,18 @@ class DatabaseService {
       }
 
       // 2. Perform insert operation
-      const { data, error } = await db
-        .from('tourists')
-        .insert(touristToInsert)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const { data, error } = await (db.from('tourists') as any)
+        .insert([touristToInsert])
         .select()
         .single();
 
       if (error) {
-        console.error('Database error adding tourist:', error);
+        logger.error(
+          'Database error adding tourist',
+          error,
+          { component: 'databaseService', operation: 'addTourist', metadata: { touristData: tourist } }
+        );
         return null;
       }
 
@@ -300,7 +324,7 @@ class DatabaseService {
 
       return data as DbTourist;
     } catch (error) {
-      console.error('Error in addTourist:', error);
+      logger.error('Error in addTourist', error, { component: 'databaseService', operation: 'addTourist', metadata: { touristData: tourist } });
       return null;
     }
   }
@@ -331,19 +355,23 @@ class DatabaseService {
         }
       }
 
-      const { data, error } = await db
-        .from('tourists')
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const { data, error } = await (db.from('tourists') as any)
         .insert(validatedTourists)
         .select();
 
       if (error) {
-        console.error('Database error batch adding tourists:', error);
+        logger.error(
+          'Database error batch adding tourists',
+          error,
+          { component: 'databaseService', operation: 'batchAddTourists', metadata: { touristCount: tourists.length } }
+        );
         return null;
       }
 
       return data as DbTourist[];
     } catch (error) {
-      console.error('Error in batchAddTourists:', error);
+      logger.error('Error in batchAddTourists', error, { component: 'databaseService', operation: 'batchAddTourists', metadata: { touristCount: tourists.length } });
       return null;
     }
   }
@@ -354,7 +382,11 @@ class DatabaseService {
         // Get the tourist to find their destination and group size
         const tourist = await this.getTouristById(touristId);
         if (!tourist) {
-          console.error('Tourist not found for status update');
+          logger.error(
+            'Tourist not found for status update',
+            null,
+            { component: 'databaseService', operation: 'updateTouristStatus', metadata: { touristId } }
+          );
           return false;
         }
 
@@ -368,7 +400,11 @@ class DatabaseService {
         if (isNowOccupying && !wasOccupying) {
           const eligibility = await this.checkBookingEligibility(destinationId, tourist.groupSize);
           if (!eligibility.allowed) {
-            console.error('Status update blocked by capacity/policy:', eligibility.reason);
+            logger.error(
+              'Status update blocked by capacity/policy',
+              eligibility.reason ? new Error(eligibility.reason) : new Error('Capacity/policy violation'),
+              { component: 'databaseService', operation: 'updateTouristStatus', metadata: { touristId, destinationId, reason: eligibility.reason } }
+            );
             return false;
           }
         }
@@ -404,7 +440,11 @@ class DatabaseService {
         .eq('id', touristId);
 
       if (error) {
-        console.error('Error updating tourist status:', error);
+        logger.error(
+          'Error updating tourist status',
+          error,
+          { component: 'databaseService', operation: 'updateTouristStatus', metadata: { touristId, newStatus } }
+        );
         return false;
       }
 
@@ -418,7 +458,7 @@ class DatabaseService {
 
       return true;
     } catch (error) {
-      console.error('Error in updateTouristStatus:', error);
+      logger.error('Error in updateTouristStatus', error, { component: 'databaseService', operation: 'updateTouristStatus', metadata: { touristId, status } });
       return false;
     }
   }
@@ -1549,13 +1589,14 @@ class DatabaseService {
     }
   }
 
-  async getLatestEcologicalIndicators(_destinationId: string): Promise<{ soil_compaction: number; vegetation_disturbance: number; wildlife_disturbance: number; water_source_impact: number } | null> {
+  async getLatestEcologicalIndicators(destinationId: string): Promise<{ soil_compaction: number; vegetation_disturbance: number; wildlife_disturbance: number; water_source_impact: number } | null> {
     try {
       if (this.isPlaceholderMode() || !db) return null;
 
       const { data, error } = await db
         .from('compliance_reports')
         .select('ecological_damage_indicators')
+        .eq('destination_id', destinationId)
         .order('created_at', { ascending: false })
         .limit(1)
         .maybeSingle();
@@ -1656,12 +1697,12 @@ class DatabaseService {
       if (this.isPlaceholderMode() || !db) return new Map();
 
       // Check cache first
-      const result = new Map<string, any>();
+      const result = new Map<string, { soil_compaction: number; vegetation_disturbance: number; wildlife_disturbance: number; water_source_impact: number }>();
       const missingIds: string[] = [];
 
       for (const id of destinationIds) {
         const cached = ecologicalIndicatorCache.get(id);
-        if (cached) {
+        if (cached !== undefined) {
           result.set(id, cached);
         } else {
           missingIds.push(id);
@@ -1913,14 +1954,14 @@ class DatabaseService {
       console.log('Saving weather data for destination:', data.destination_id, data);
       
       // Use service role client to bypass RLS policies for system operations
-      const client = createServerComponentClient() as SupabaseClient<any> | null;
+      const client = createServerComponentClient();
       if (!client) {
         console.warn('⚠️ SUPABASE_SERVICE_ROLE_KEY is missing. Skipping database operation.');
         return false;
       }
       
-      const { error } = await client
-        .from('weather_data')
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const { error } = await (client.from('weather_data') as any)
         .insert([data]);
 
       if (error) {
